@@ -21,6 +21,7 @@ import android.view.inputmethod.CursorAnchorInfo
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
 import android.widget.TextView
+import dev.horota.meltype.ui.ScreenInsets
 import dev.horota.meltype.R
 import dev.horota.meltype.core.CompositionView
 import dev.horota.meltype.core.CoreBridge
@@ -33,8 +34,8 @@ import dev.horota.meltype.settings.WordRegisterActivity
 import java.io.File
 
 /**
- * 物理キーボード専用。画面キーボードも、画面の下の候補バーも出さない。
- * 候補・モードの表示・絵文字の一覧は、入力カーソルの近くに浮かべる小さな窓 (ImeDialog) に出す。
+ * 物理キーと画面 QWERTY キーを同じ変換コントローラーへ渡す。
+ * 物理キーでは候補をカーソルのそばに、画面キーではタップ可能な候補をキーボード内に出す。
  * Android 11 以降は、表示を頼まれていない IME の窓は見えないので、1px の入力用の窓 (input view) を出し、
  * 文字を打ち始めたら自分で表示を頼む (requestShowSelf)。
  */
@@ -48,9 +49,11 @@ class MeltypeImeService : InputMethodService(), OverlayOwner {
         }
     }
 
-    private var inputGeneration = 0L
-    private var fallbackAttempted = false
-    private var recoveryView = false
+    private lateinit var softwareKeyboard: SoftwareKeyboard
+    private var touchComposition: CompositionView? = null
+
+    private fun softwareKeyboardWanted(): Boolean =
+        (::prefs.isInitialized && prefs.alwaysShowSoftwareKeyboard) || !hasPhysicalKeyboard()
 
     private fun hasPhysicalKeyboard(): Boolean {
         val config = resources.configuration
@@ -61,20 +64,27 @@ class MeltypeImeService : InputMethodService(), OverlayOwner {
     }
 
     private fun showKeyboardPicker() {
+        if (::controller.isInitialized) controller.commitComposition()
         getSystemService(android.view.inputmethod.InputMethodManager::class.java).showInputMethodPicker()
     }
 
-    private fun restoreSoftwareKeyboard() {
-        val generation = inputGeneration
-        handler.post {
-            if (generation != inputGeneration || fallbackAttempted || hasPhysicalKeyboard() || !isInputViewShown) return@post
-            fallbackAttempted = true
-            try {
-                switchToPreviousInputMethod()
-            } catch (_: RuntimeException) {
-                // 戻す相手がない場合も、入力ビューの選択ボタンから切り替えられる。
-            }
-        }
+    private fun pressSoftwareKey(key: KeyInput) {
+        if (!::controller.isInitialized) return
+        vibrateVirtualKey()
+        SoftwareInput(controller, InputConnectionSink({ currentInputConnection }, ::onCommitted)) {
+            sendDefaultEditorAction(true)
+        }.press(key)
+        syncSoftwareKeyboard()
+    }
+
+    private fun syncSoftwareKeyboard() {
+        if (!::softwareKeyboard.isInitialized || !::controller.isInitialized) return
+        val visible = softwareKeyboardWanted()
+        softwareKeyboard.visibility = if (visible) View.VISIBLE else View.GONE
+        softwareKeyboard.setContext(controller.digitPadKind, controller.mode, controller.showsBar,
+            SoftwareKeys.enterLabel(currentInputEditorInfo?.imeOptions ?: 0))
+        softwareKeyboard.showComposition(touchComposition)
+        inputViewRoot?.requestApplyInsets()
     }
 
     override fun ensureOverlay(): Boolean {
@@ -180,7 +190,12 @@ class MeltypeImeService : InputMethodService(), OverlayOwner {
 
     private val display = object : CandidateDisplay {
         override fun show(view: CompositionView, inlineReading: Boolean) {
-            val ok = floating.show(view, inlineReading)
+            touchComposition = view
+            val ok = if (softwareKeyboardWanted()) {
+                floating.hide()
+                if (::softwareKeyboard.isInitialized) softwareKeyboard.showComposition(view)
+                true
+            } else floating.show(view, inlineReading)
             diag("candidates show ok=$ok cands=${view.candidates.size} inline=$inlineReading anchor=${composingAnchor()}")
             if (!fComposing) {
                 fComposing = true
@@ -189,6 +204,8 @@ class MeltypeImeService : InputMethodService(), OverlayOwner {
         }
 
         override fun hide() {
+            touchComposition = null
+            if (::softwareKeyboard.isInitialized) softwareKeyboard.showComposition(null)
             floating.hide()
             if (fComposing) {
                 fComposing = false
@@ -212,7 +229,8 @@ class MeltypeImeService : InputMethodService(), OverlayOwner {
             statusIcon(mode)
             val changed = last != null && last != text
             last = text
-            if (changed && hasPhysicalKeyboard()) showIndicator(text, 1200)
+            if (::softwareKeyboard.isInitialized) syncSoftwareKeyboard()
+            if (changed && !softwareKeyboardWanted()) showIndicator(text, 1200)
         }
     }
 
@@ -289,6 +307,7 @@ class MeltypeImeService : InputMethodService(), OverlayOwner {
         val theme = CandidateTheme.of(prefs.themeMode, night)
         floating.applyTheme(theme)
         emojiPanel.applyTheme(theme)
+        if (::softwareKeyboard.isInitialized) softwareKeyboard.applyTheme(theme)
     }
 
     /** 確定した文字。絵文字なら「最近使った絵文字」に入れる (候補から選んだときも)。 */
@@ -321,11 +340,8 @@ class MeltypeImeService : InputMethodService(), OverlayOwner {
     override fun onStartInputView(info: EditorInfo, restarting: Boolean) {
         super.onStartInputView(info, restarting)
         cursorInfo = null
-        if (!hasPhysicalKeyboard()) {
-            hideStatusIcon()
-            restoreSoftwareKeyboard()
-            return
-        }
+        syncSoftwareKeyboard()
+        if (softwareKeyboardWanted()) floating.hide()
         // カーソルが動くたびに位置を教えてもらう (対応していない入力欄では何も来ない)
         currentInputConnection?.requestCursorUpdates(InputConnection.CURSOR_UPDATE_MONITOR)
     }
@@ -424,7 +440,8 @@ class MeltypeImeService : InputMethodService(), OverlayOwner {
 
     private fun syncDigitPad() {
         if (!::digitPad.isInitialized || !::controller.isInitialized) return
-        digitPad.setKind(controller.digitPadKind)
+        digitPad.setKind(if (softwareKeyboardWanted()) dev.horota.meltype.input.DigitPadKind.NONE else controller.digitPadKind)
+        syncSoftwareKeyboard()
         digitPad.requestLayout()
     }
 
@@ -436,7 +453,7 @@ class MeltypeImeService : InputMethodService(), OverlayOwner {
 
     private fun deleteDigitBeforeCursor() {
         vibrateVirtualKey()
-        currentInputConnection?.deleteSurroundingText(1, 0)
+        InputConnectionSink({ currentInputConnection }).deleteBackward()
     }
 
     private fun dp(value: Int): Int =
@@ -455,35 +472,24 @@ class MeltypeImeService : InputMethodService(), OverlayOwner {
     private var fBarHeldTop = -1
 
     /**
-     * ふだんは 1px。数字欄のときだけ、画面の一番下に Q25 のキーと同じ数字行を出す。
+     * 物理キーのときは小さな数字行・Fキー行、タッチ端末では画面キーボードを出す。
      * その上に Fキー行 (変換中だけ自動表示、固定も可)。
      * 候補はこれまでどおり浮かべる窓に出す。
      */
     override fun onCreateInputView(): View {
-        recoveryView = !hasPhysicalKeyboard()
-        if (recoveryView) {
-            return android.widget.LinearLayout(this).apply {
-                orientation = android.widget.LinearLayout.VERTICAL
-                setPadding(dp(16), dp(12), dp(16), dp(12))
-                addView(TextView(context).apply {
-                    text = "物理キーボードがありません。画面キーボードを選んでください。"
-                    textSize = 16f
-                })
-                addView(android.widget.Button(context).apply {
-                    text = "画面キーボードに切り替える"
-                    setOnClickListener { showKeyboardPicker() }
-                })
-                inputViewRoot = this
-            }
-        }
         val container = android.widget.LinearLayout(this).apply { orientation = android.widget.LinearLayout.VERTICAL }
         fKeyBar = FKeyBar(this, ::pressFunctionKey, ::toggleFBarPin)
         fKeyBar.diag = { msg -> diag(msg) }
         digitPad = DigitPad(this, ::insertDigit, ::deleteDigitBeforeCursor)
         container.addView(fKeyBar)
         container.addView(digitPad)
+        softwareKeyboard = SoftwareKeyboard(this, ::pressSoftwareKey, { controller.selectCandidate(it) },
+            { controller.convert(it) }, ::showKeyboardPicker)
+        container.addView(softwareKeyboard)
+        ScreenInsets.apply(container, includeIme = false, includeTop = false, enabled = ::softwareKeyboardWanted)
         inputViewRoot = container
-        if (::controller.isInitialized) digitPad.setKind(controller.digitPadKind)
+        if (::controller.isInitialized) syncDigitPad()
+        applyTheme()
         syncFKeyBar()
         return container
     }
@@ -491,7 +497,12 @@ class MeltypeImeService : InputMethodService(), OverlayOwner {
     /** 物理キーボードがあっても入力用の窓を出す。文字のパスワード欄では出さない。暗証番号は数字行のために出す。 */
     override fun onEvaluateInputViewShown(): Boolean {
         super.onEvaluateInputViewShown()
-        return !hasPhysicalKeyboard() || !::controller.isInitialized || controller.showsWindow || fBarWanted()
+        return softwareKeyboardWanted() || !::controller.isInitialized || controller.showsWindow || fBarWanted()
+    }
+
+    override fun onShowInputRequested(flags: Int, configChange: Boolean): Boolean {
+        // 閉じた物理キーや常時表示設定でも、暗黙の表示要求を標準実装に拒否させない。
+        return if (softwareKeyboardWanted()) true else super.onShowInputRequested(flags, configChange)
     }
 
     /** Fキー行を出したい状態か (固定中、または自動表示が有効で未確定の文字がある)。 */
@@ -520,7 +531,7 @@ class MeltypeImeService : InputMethodService(), OverlayOwner {
     private fun syncFKeyBar() {
         if (!::fKeyBar.isInitialized || !::prefs.isInitialized) return
         applyKeycapStyle()
-        val want = fBarWanted()
+        val want = fBarWanted() && !softwareKeyboardWanted()
         diag("fbar sync want=$want pinned=${prefs.fBarPinned} composing=$fComposing barActive=${fKeyBar.isActive} inputShown=$isInputViewShown barSize=${fKeyBar.width}x${fKeyBar.height}")
         fKeyBar.setActive(want, prefs.fBarPinned)
         try {
@@ -581,7 +592,12 @@ class MeltypeImeService : InputMethodService(), OverlayOwner {
                 outInsets.touchableRegion.set(loc[0], loc[1], loc[0] + root.width, loc[1] + root.height)
             }
         }
-        if (recoveryView || (::digitPad.isInitialized && digitPad.isActive)) return
+        if (::softwareKeyboard.isInitialized && softwareKeyboard.visibility == View.VISIBLE && rootTop >= 0) {
+            outInsets.contentTopInsets = rootTop
+            outInsets.visibleTopInsets = rootTop
+            return
+        }
+        if (::digitPad.isInitialized && digitPad.isActive) return
         val bottom = window.window?.decorView?.height ?: return
         if (bottom <= 0) return
         // Fキー行が出ている間は、その上端をアプリに伝える (対応アプリは入力欄を持ち上げる)。
@@ -601,9 +617,9 @@ class MeltypeImeService : InputMethodService(), OverlayOwner {
     override fun onStartInput(attribute: EditorInfo, restarting: Boolean) {
         super.onStartInput(attribute, restarting)
         cancelZeroHold()
-        inputGeneration += 1
-        fallbackAttempted = false
         fBarHeldTop = -1
+        touchComposition = null
+        if (::softwareKeyboard.isInitialized) softwareKeyboard.reset()
         vibeLogged = false
         diag("onStartInput pkg=${attribute.packageName} inputView=$isInputViewShown")
         if (hasPhysicalKeyboard() && !isInputViewShown && !attribute.packageName.isNullOrEmpty()) {
@@ -622,17 +638,19 @@ class MeltypeImeService : InputMethodService(), OverlayOwner {
         syncDigitPad()
         syncFKeyBar()
         updateInputViewShown()
-        startupNotice?.takeIf { hasPhysicalKeyboard() }?.let {
+        startupNotice?.let {
             startupNotice = null
-            showIndicator(it, 4000)
+            if (softwareKeyboardWanted()) android.widget.Toast.makeText(this, it, android.widget.Toast.LENGTH_LONG).show()
+            else showIndicator(it, 4000)
         }
     }
 
     override fun onFinishInput() {
-        inputGeneration += 1
         cancelZeroHold()
         hideSymbolLegend()
         if (::digitPad.isInitialized) digitPad.hide()
+        touchComposition = null
+        if (::softwareKeyboard.isInitialized) softwareKeyboard.showComposition(null)
         fComposing = false
         fBarHeldTop = -1
         if (::fKeyBar.isInitialized && ::prefs.isInitialized) {
@@ -661,7 +679,6 @@ class MeltypeImeService : InputMethodService(), OverlayOwner {
     }
 
     override fun onDestroy() {
-        inputGeneration += 1
         hideStatusIcon()
         emojiPanel.hide()
         floating.hide()

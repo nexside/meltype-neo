@@ -10,6 +10,11 @@ interface EditorSink {
     fun textBeforeCursor(length: Int): String?
     fun textAfterCursor(length: Int): String?
     fun deleteBefore(length: Int)
+    fun deleteBackward() {
+        val before = textBeforeCursor(2).orEmpty()
+        val pair = before.length >= 2 && Character.isHighSurrogate(before[before.length - 2]) && Character.isLowSurrogate(before.last())
+        deleteBefore(if (pair) 2 else 1)
+    }
     fun commit(text: String)
     /** open + close を確定して、カーソルを間に置く (「()」の中に書き始められるように)。非対応なら続けて確定するだけ。 */
     fun commitInside(open: String, close: String) {

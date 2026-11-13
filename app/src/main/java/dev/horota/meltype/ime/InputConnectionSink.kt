@@ -30,6 +30,15 @@ class InputConnectionSink(
         connection()?.deleteSurroundingText(length, 0)
     }
 
+    override fun deleteBackward() {
+        val ic = connection() ?: return
+        if (!ic.getSelectedText(0).isNullOrEmpty()) {
+            ic.commitText("", 1)
+        } else if (!ic.deleteSurroundingTextInCodePoints(1, 0)) {
+            super<EditorSink>.deleteBackward()
+        }
+    }
+
     override fun commit(text: String) {
         connection()?.commitText(text, 1)
         onCommit(text)
