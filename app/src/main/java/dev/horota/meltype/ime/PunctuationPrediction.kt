@@ -25,7 +25,7 @@ object PunctuationPrediction {
             .substringAfterLast('！').substringAfterLast('!').trim()
         if (sentence.length < 2) return null
         if (notAQuestion.any { sentence.endsWith(it) }) return null
-        val asks = sentence.endsWith("かな") || sentence.endsWith("だろ") || sentence.endsWith("か")
+        val asks = sentence.endsWith("かな") || sentence.endsWith("だろ") || sentence.endsWith("だろう") || sentence.endsWith("か")
         return if (asks) "？" else null
     }
 
