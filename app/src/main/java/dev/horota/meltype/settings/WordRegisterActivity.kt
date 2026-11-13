@@ -33,9 +33,23 @@ class WordRegisterActivity : Activity() {
         val save = Button(this).apply {
             text = "登録"
             setOnClickListener {
-                val message = register(reading.text.toString(), word.text.toString())
-                Toast.makeText(context, message.text, Toast.LENGTH_LONG).show()
-                if (message.ok) finish()
+                val rawReading = reading.text.toString()
+                val rawWord = word.text.toString()
+                isEnabled = false
+                reading.isEnabled = false
+                word.isEnabled = false
+                DictionaryJobs.run(this@WordRegisterActivity, { register(rawReading, rawWord) }, { message ->
+                    isEnabled = true
+                    reading.isEnabled = true
+                    word.isEnabled = true
+                    Toast.makeText(context, message.text, Toast.LENGTH_LONG).show()
+                    if (message.ok) finish()
+                }, {
+                    isEnabled = true
+                    reading.isEnabled = true
+                    word.isEnabled = true
+                    Toast.makeText(context, "登録できませんでした。元の辞書は保持されています", Toast.LENGTH_LONG).show()
+                })
             }
         }
         val cancel = Button(this).apply {
@@ -72,11 +86,8 @@ class WordRegisterActivity : Activity() {
             return Message(false, "読みはひらがな・英数字だけ、単語は空にできません (タブや改行も使えません)")
         }
         val file = File(MeltypePrefs.dataDirectory(this), "userdict.txt")
-        val existing = if (file.exists()) file.readText() else ""
-        val merged = UserDictionaryImport.merge(existing, listOf(UserDictionaryImport.Entry(reading, word)))
+        val merged = DictionaryStorage.merge(file, listOf(UserDictionaryImport.Entry(reading, word)))
         if (merged.added == 0) return Message(true, "もう登録されています")
-        file.parentFile?.mkdirs()
-        file.writeText(merged.text)
         return Message(true, "「$word」を登録しました")
     }
 

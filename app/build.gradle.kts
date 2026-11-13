@@ -13,8 +13,8 @@ android {
         applicationId = "dev.horota.meltype"
         minSdk = 29
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.0.1"
+        versionCode = 2
+        versionName = "0.0.2"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk { abiFilters += "arm64-v8a" }
         // 16KB のページサイズの端末 (Android 15 以降の要件) でも読み込めるようにする
@@ -54,6 +54,8 @@ android {
     sourceSets["main"].assets.srcDirs(layout.buildDirectory.dir("generated/notices"))
     // libmozc_helper.so を実行するには、ネイティブライブラリが APK から展開されている必要がある
     packaging { jniLibs { useLegacyPackaging = true } }
+
+    buildFeatures { buildConfig = true }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

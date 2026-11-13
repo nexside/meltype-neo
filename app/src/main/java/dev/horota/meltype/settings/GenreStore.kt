@@ -42,8 +42,14 @@ class GenreStore(private val context: Context) {
     fun isEnabled(key: String): Boolean = key in prefs.enabledGenres
 
     fun setEnabled(key: String, enabled: Boolean) {
-        prefs.enabledGenres = if (enabled) prefs.enabledGenres + key else prefs.enabledGenres - key
-        sync()
+        val previous = prefs.enabledGenres
+        prefs.enabledGenres = if (enabled) previous + key else previous - key
+        try {
+            sync()
+        } catch (e: IOException) {
+            prefs.enabledGenres = previous
+            throw e
+        }
     }
 
     /** 自分のジャンルを作る。作れなければ理由を返す。 */
@@ -54,7 +60,7 @@ class GenreStore(private val context: Context) {
         if (file.exists()) return "同じ名前のジャンルがあります"
         return try {
             genreDirectory.mkdirs()
-            file.writeText("")
+            DictionaryStorage.save(file, "")
             null
         } catch (e: IOException) {
             "作れませんでした: ${e.message}"
@@ -105,7 +111,7 @@ class GenreStore(private val context: Context) {
             ?.forEach { if (it.name !in wanted) it.delete() }
         for ((name, xml) in wanted) {
             val file = File(directory, name)
-            if (!file.exists() || file.readText() != xml) file.writeText(xml)
+            if (!file.exists() || DictionaryStorage.read(file) != xml) DictionaryStorage.save(file, xml)
         }
     }
 
