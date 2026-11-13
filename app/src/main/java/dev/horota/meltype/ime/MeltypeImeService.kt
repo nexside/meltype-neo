@@ -500,6 +500,11 @@ class MeltypeImeService : InputMethodService(), OverlayOwner {
         return softwareKeyboardWanted() || !::controller.isInitialized || controller.showsWindow || fBarWanted()
     }
 
+    override fun onShowInputRequested(flags: Int, configChange: Boolean): Boolean {
+        // 閉じた物理キーや常時表示設定でも、暗黙の表示要求を標準実装に拒否させない。
+        return if (softwareKeyboardWanted()) true else super.onShowInputRequested(flags, configChange)
+    }
+
     /** Fキー行を出したい状態か (固定中、または自動表示が有効で未確定の文字がある)。 */
     private fun fBarWanted(): Boolean =
         (::prefs.isInitialized && prefs.fBarPinned) || (fComposing && (!::prefs.isInitialized || prefs.fBarAutoShow))

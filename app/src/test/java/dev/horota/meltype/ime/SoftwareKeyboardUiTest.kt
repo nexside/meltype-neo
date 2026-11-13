@@ -87,6 +87,10 @@ class SoftwareKeyboardUiTest {
             service.resources.configuration.hardKeyboardHidden = android.content.res.Configuration.HARDKEYBOARDHIDDEN_YES
             val inputView = service.onCreateInputView()
             assertTrue(service.onEvaluateInputViewShown())
+            assertTrue(service.onShowInputRequested(0, false))
+            // ハードウェア配列が残っていても、閉じた内蔵キーなら画面入力を許可する。
+            service.resources.configuration.keyboard = android.content.res.Configuration.KEYBOARD_QWERTY
+            assertTrue(service.onShowInputRequested(0, false))
             assertNotNull(inputView.findViewWithTag<View>("soft-key-q"))
             val info = android.view.inputmethod.EditorInfo().apply {
                 inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
