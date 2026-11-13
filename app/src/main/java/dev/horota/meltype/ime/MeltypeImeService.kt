@@ -546,6 +546,7 @@ class MeltypeImeService : InputMethodService(), OverlayOwner {
 
     override fun onStartInput(attribute: EditorInfo, restarting: Boolean) {
         super.onStartInput(attribute, restarting)
+        cancelZeroHold()
         vibeLogged = false
         diag("onStartInput pkg=${attribute.packageName} inputView=$isInputViewShown")
         if (!isInputViewShown && !attribute.packageName.isNullOrEmpty()) {
@@ -567,10 +568,6 @@ class MeltypeImeService : InputMethodService(), OverlayOwner {
         startupNotice?.let {
             startupNotice = null
             showIndicator(it, 4000)
-        }
-        pendingVoice?.let { text ->
-            pendingVoice = null
-            currentInputConnection?.commitText(text, 1)
         }
     }
 
@@ -732,7 +729,7 @@ class MeltypeImeService : InputMethodService(), OverlayOwner {
     private var zeroDown = false
     private var zerosTyped = 0
     private var micKeyCode = -1
-    private var pendingVoice: String? = null
+    private var voiceGeneration = 0L
     private var voice: VoiceInput? = null
 
     private val zeroLongPress = Runnable {
@@ -812,20 +809,22 @@ class MeltypeImeService : InputMethodService(), OverlayOwner {
     private fun voiceSession(): VoiceInput = voice ?: VoiceInput(
         this,
         onText = { text ->
+            val generation = voiceGeneration
             handler.post {
+                if (generation != voiceGeneration || !controller.acceptsVoice) return@post
                 hideSpeakIcon()
                 dismissIndicator()
                 val connection = currentInputConnection
                 if (connection != null) {
                     connection.finishComposingText()
                     connection.commitText(text, 1)
-                } else {
-                    pendingVoice = text
                 }
             }
         },
         onEnd = { reason ->
+            val generation = voiceGeneration
             handler.post {
+                if (generation != voiceGeneration) return@post
                 hideSpeakIcon()
                 dismissIndicator()
                 when (reason) {
@@ -852,6 +851,7 @@ class MeltypeImeService : InputMethodService(), OverlayOwner {
     }
 
     private fun beginVoice() {
+        voiceGeneration += 1
         if (voiceSession().start()) showSpeakIcon()
     }
 
@@ -895,6 +895,7 @@ class MeltypeImeService : InputMethodService(), OverlayOwner {
     }
 
     private fun cancelZeroHold() {
+        voiceGeneration += 1
         handler.removeCallbacks(zeroLongPress)
         handler.removeCallbacks(zeroTap)
         handler.removeCallbacks(micRelease)
