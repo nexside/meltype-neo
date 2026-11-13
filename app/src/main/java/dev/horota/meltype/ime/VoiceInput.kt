@@ -80,12 +80,10 @@ class VoiceInput(
             rec.startListening(intent)
             true
         } catch (e: SecurityException) {
-            release(rec)
-            onEnd("permit")
+            if (release(rec)) onEnd("permit")
             false
         } catch (e: RuntimeException) {
-            release(rec)
-            onEnd("unavailable")
+            if (release(rec)) onEnd("unavailable")
             false
         }
     }
@@ -97,8 +95,9 @@ class VoiceInput(
             rec.stopListening()
         } catch (e: RuntimeException) {
             val text = latest
-            release(rec)
-            if (text.isNotEmpty()) onText(text) else onEnd(null)
+            if (release(rec)) {
+                if (text.isNotEmpty()) onText(text) else onEnd(null)
+            }
         }
     }
 
