@@ -80,7 +80,7 @@ class UserDictionaryActivity : Activity() {
                     content(text)
                 }) {
                     showContent(it)
-                    Toast.makeText(this, "保存しました。次に入力欄を開いたときに反映されます", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this@UserDictionaryActivity, "保存しました。次に入力欄を開いたときに反映されます", Toast.LENGTH_LONG).show()
                 }
             }
         }

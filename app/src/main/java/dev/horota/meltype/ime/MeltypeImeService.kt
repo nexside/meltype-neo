@@ -54,7 +54,7 @@ class MeltypeImeService : InputMethodService(), OverlayOwner {
 
     private fun hasPhysicalKeyboard(): Boolean {
         val config = resources.configuration
-        val external = InputDevice.getDeviceIds().mapNotNull { id ->
+        val external = InputDevice.getDeviceIds().toList().mapNotNull { id ->
             InputDevice.getDevice(id)?.takeIf { !it.isVirtual && it.keyboardType == InputDevice.KEYBOARD_TYPE_ALPHABETIC }?.isExternal
         }
         return PhysicalKeyboardPolicy.available(config.keyboard, config.hardKeyboardHidden, external)
