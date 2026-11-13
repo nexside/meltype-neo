@@ -851,6 +851,7 @@ class MeltypeImeService : InputMethodService(), OverlayOwner {
     }
 
     private fun beginVoice() {
+        if (!::controller.isInitialized || !controller.acceptsVoice) return
         voiceGeneration += 1
         if (voiceSession().start()) showSpeakIcon()
     }
@@ -952,7 +953,10 @@ class MeltypeImeService : InputMethodService(), OverlayOwner {
         }
         if (isMicKey(event)) {
             if (event.keyCode == KeyEvent.KEYCODE_VOICE_ASSIST) {
-                if (event.repeatCount == 0) beginVoice()
+                if (event.repeatCount == 0) {
+                    micKeyCode = event.keyCode
+                    beginVoice()
+                }
                 return true
             }
             if (event.repeatCount == 0) onMicDown(event.keyCode)
@@ -1007,7 +1011,12 @@ class MeltypeImeService : InputMethodService(), OverlayOwner {
     override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
         if (event.keyCode == KeyEvent.KEYCODE_ALT_LEFT || event.keyCode == KeyEvent.KEYCODE_ALT_RIGHT) hideSymbolLegend()
         if (micKeyCode != -1 && event.keyCode == micKeyCode) {
-            onMicUp()
+            if (event.keyCode == KeyEvent.KEYCODE_VOICE_ASSIST) {
+                micKeyCode = -1
+                endVoice()
+            } else {
+                onMicUp()
+            }
             return true
         }
         return panelConsumed.remove(keyCode) || controller.keyUp(keyCode) || super.onKeyUp(keyCode, event)
