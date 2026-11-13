@@ -20,9 +20,9 @@ class VoiceInput(
 ) {
     private var recognizer: SpeechRecognizer? = null
     private var latest = ""
-    private var delivered = false
 
     fun start(): Boolean {
+        cancel()
         if (context.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             onEnd("permit")
             return false
@@ -31,7 +31,6 @@ class VoiceInput(
             onEnd("unavailable")
             return false
         }
-        cancel()
         val rec = try {
             SpeechRecognizer.createSpeechRecognizer(context)
         } catch (e: RuntimeException) {
@@ -40,7 +39,6 @@ class VoiceInput(
         }
         recognizer = rec
         latest = ""
-        delivered = false
         rec.setRecognitionListener(object : RecognitionListener {
             override fun onReadyForSpeech(params: Bundle?) = Unit
             override fun onBeginningOfSpeech() = Unit
@@ -49,20 +47,23 @@ class VoiceInput(
             override fun onEndOfSpeech() = Unit
             override fun onEvent(eventType: Int, params: Bundle?) = Unit
             override fun onPartialResults(partialResults: Bundle?) {
+                if (recognizer !== rec) return
                 val text = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()?.trim().orEmpty()
                 if (text.isNotEmpty()) latest = text
             }
 
             override fun onError(error: Int) {
+                if (recognizer !== rec) return
                 val text = latest
-                release()
+                if (!release(rec)) return
                 if (text.isNotEmpty()) onText(text) else onEnd(null)
             }
 
             override fun onResults(results: Bundle?) {
+                if (recognizer !== rec) return
                 val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()?.trim().orEmpty()
                     .ifEmpty { latest }
-                release()
+                if (!release(rec)) return
                 if (text.isNotEmpty()) onText(text) else onEnd(null)
             }
         })
@@ -79,12 +80,10 @@ class VoiceInput(
             rec.startListening(intent)
             true
         } catch (e: SecurityException) {
-            release()
-            onEnd("permit")
+            if (release(rec)) onEnd("permit")
             false
         } catch (e: RuntimeException) {
-            release()
-            onEnd("unavailable")
+            if (release(rec)) onEnd("unavailable")
             false
         }
     }
@@ -96,14 +95,16 @@ class VoiceInput(
             rec.stopListening()
         } catch (e: RuntimeException) {
             val text = latest
-            release()
-            if (text.isNotEmpty()) onText(text) else onEnd(null)
+            if (release(rec)) {
+                if (text.isNotEmpty()) onText(text) else onEnd(null)
+            }
         }
     }
 
     fun cancel() {
         val rec = recognizer ?: return
         recognizer = null
+        latest = ""
         try {
             rec.cancel()
         } catch (e: RuntimeException) {
@@ -116,15 +117,15 @@ class VoiceInput(
         }
     }
 
-    private fun release() {
-        if (delivered) return
-        delivered = true
-        val rec = recognizer
+    private fun release(rec: SpeechRecognizer): Boolean {
+        if (recognizer !== rec) return false
         recognizer = null
+        latest = ""
         try {
-            rec?.destroy()
+            rec.destroy()
         } catch (e: RuntimeException) {
             // 破棄できなくても入力は続ける
         }
+        return true
     }
 }

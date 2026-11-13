@@ -42,7 +42,40 @@ class MeltypeImeService : InputMethodService(), OverlayOwner {
     override val overlay: OverlayHost by lazy { OverlayHost(this) }
     private var overlayDialog: android.app.Dialog? = null
 
-    private fun diag(line: String) = dev.horota.meltype.settings.DiagLog.add(MeltypePrefs.dataDirectory(this), line)
+    private fun diag(line: String) {
+        if (::prefs.isInitialized && prefs.diagnosticLogging) {
+            dev.horota.meltype.settings.DiagLog.add(MeltypePrefs.dataDirectory(this), line)
+        }
+    }
+
+    private var inputGeneration = 0L
+    private var fallbackAttempted = false
+    private var recoveryView = false
+
+    private fun hasPhysicalKeyboard(): Boolean {
+        val config = resources.configuration
+        val external = InputDevice.getDeviceIds().toList().mapNotNull { id ->
+            InputDevice.getDevice(id)?.takeIf { !it.isVirtual && it.keyboardType == InputDevice.KEYBOARD_TYPE_ALPHABETIC }?.isExternal
+        }
+        return PhysicalKeyboardPolicy.available(config.keyboard, config.hardKeyboardHidden, external)
+    }
+
+    private fun showKeyboardPicker() {
+        getSystemService(android.view.inputmethod.InputMethodManager::class.java).showInputMethodPicker()
+    }
+
+    private fun restoreSoftwareKeyboard() {
+        val generation = inputGeneration
+        handler.post {
+            if (generation != inputGeneration || fallbackAttempted || hasPhysicalKeyboard() || !isInputViewShown) return@post
+            fallbackAttempted = true
+            try {
+                switchToPreviousInputMethod()
+            } catch (_: RuntimeException) {
+                // 戻す相手がない場合も、入力ビューの選択ボタンから切り替えられる。
+            }
+        }
+    }
 
     override fun ensureOverlay(): Boolean {
         val existing = overlayDialog
@@ -148,7 +181,7 @@ class MeltypeImeService : InputMethodService(), OverlayOwner {
     private val display = object : CandidateDisplay {
         override fun show(view: CompositionView, inlineReading: Boolean) {
             val ok = floating.show(view, inlineReading)
-            diag("candidates show ok=$ok text='${view.text}' cands=${view.candidates.size} inline=$inlineReading anchor=${composingAnchor()}")
+            diag("candidates show ok=$ok cands=${view.candidates.size} inline=$inlineReading anchor=${composingAnchor()}")
             if (!fComposing) {
                 fComposing = true
                 syncFKeyBar()
@@ -179,7 +212,7 @@ class MeltypeImeService : InputMethodService(), OverlayOwner {
             statusIcon(mode)
             val changed = last != null && last != text
             last = text
-            if (changed) showIndicator(text, 1200)
+            if (changed && hasPhysicalKeyboard()) showIndicator(text, 1200)
         }
     }
 
@@ -288,6 +321,11 @@ class MeltypeImeService : InputMethodService(), OverlayOwner {
     override fun onStartInputView(info: EditorInfo, restarting: Boolean) {
         super.onStartInputView(info, restarting)
         cursorInfo = null
+        if (!hasPhysicalKeyboard()) {
+            hideStatusIcon()
+            restoreSoftwareKeyboard()
+            return
+        }
         // カーソルが動くたびに位置を教えてもらう (対応していない入力欄では何も来ない)
         currentInputConnection?.requestCursorUpdates(InputConnection.CURSOR_UPDATE_MONITOR)
     }
@@ -422,6 +460,22 @@ class MeltypeImeService : InputMethodService(), OverlayOwner {
      * 候補はこれまでどおり浮かべる窓に出す。
      */
     override fun onCreateInputView(): View {
+        recoveryView = !hasPhysicalKeyboard()
+        if (recoveryView) {
+            return android.widget.LinearLayout(this).apply {
+                orientation = android.widget.LinearLayout.VERTICAL
+                setPadding(dp(16), dp(12), dp(16), dp(12))
+                addView(TextView(context).apply {
+                    text = "物理キーボードがありません。画面キーボードを選んでください。"
+                    textSize = 16f
+                })
+                addView(android.widget.Button(context).apply {
+                    text = "画面キーボードに切り替える"
+                    setOnClickListener { showKeyboardPicker() }
+                })
+                inputViewRoot = this
+            }
+        }
         val container = android.widget.LinearLayout(this).apply { orientation = android.widget.LinearLayout.VERTICAL }
         fKeyBar = FKeyBar(this, ::pressFunctionKey, ::toggleFBarPin)
         fKeyBar.diag = { msg -> diag(msg) }
@@ -437,7 +491,7 @@ class MeltypeImeService : InputMethodService(), OverlayOwner {
     /** 物理キーボードがあっても入力用の窓を出す。文字のパスワード欄では出さない。暗証番号は数字行のために出す。 */
     override fun onEvaluateInputViewShown(): Boolean {
         super.onEvaluateInputViewShown()
-        return !::controller.isInitialized || controller.showsWindow || fBarWanted()
+        return !hasPhysicalKeyboard() || !::controller.isInitialized || controller.showsWindow || fBarWanted()
     }
 
     /** Fキー行を出したい状態か (固定中、または自動表示が有効で未確定の文字がある)。 */
@@ -527,7 +581,7 @@ class MeltypeImeService : InputMethodService(), OverlayOwner {
                 outInsets.touchableRegion.set(loc[0], loc[1], loc[0] + root.width, loc[1] + root.height)
             }
         }
-        if (::digitPad.isInitialized && digitPad.isActive) return
+        if (recoveryView || (::digitPad.isInitialized && digitPad.isActive)) return
         val bottom = window.window?.decorView?.height ?: return
         if (bottom <= 0) return
         // Fキー行が出ている間は、その上端をアプリに伝える (対応アプリは入力欄を持ち上げる)。
@@ -546,9 +600,13 @@ class MeltypeImeService : InputMethodService(), OverlayOwner {
 
     override fun onStartInput(attribute: EditorInfo, restarting: Boolean) {
         super.onStartInput(attribute, restarting)
+        cancelZeroHold()
+        inputGeneration += 1
+        fallbackAttempted = false
+        fBarHeldTop = -1
         vibeLogged = false
         diag("onStartInput pkg=${attribute.packageName} inputView=$isInputViewShown")
-        if (!isInputViewShown && !attribute.packageName.isNullOrEmpty()) {
+        if (hasPhysicalKeyboard() && !isInputViewShown && !attribute.packageName.isNullOrEmpty()) {
             try {
                 requestShowSelf(SHOW_EXPLICIT) // 物理キーボードがあっても入力の窓を出す (表示物を付けるために必要)
             } catch (e: RuntimeException) {
@@ -564,17 +622,14 @@ class MeltypeImeService : InputMethodService(), OverlayOwner {
         syncDigitPad()
         syncFKeyBar()
         updateInputViewShown()
-        startupNotice?.let {
+        startupNotice?.takeIf { hasPhysicalKeyboard() }?.let {
             startupNotice = null
             showIndicator(it, 4000)
-        }
-        pendingVoice?.let { text ->
-            pendingVoice = null
-            currentInputConnection?.commitText(text, 1)
         }
     }
 
     override fun onFinishInput() {
+        inputGeneration += 1
         cancelZeroHold()
         hideSymbolLegend()
         if (::digitPad.isInitialized) digitPad.hide()
@@ -606,6 +661,7 @@ class MeltypeImeService : InputMethodService(), OverlayOwner {
     }
 
     override fun onDestroy() {
+        inputGeneration += 1
         hideStatusIcon()
         emojiPanel.hide()
         floating.hide()
@@ -717,7 +773,7 @@ class MeltypeImeService : InputMethodService(), OverlayOwner {
         val key = KeyInput(keyCode, symbol.first().code, letter.first().code, KeyEvent.META_ALT_ON)
         val handled = controller.keyDown(key)
         controller.keyUp(keyCode)
-        diag("sym tap $letter -> $symbol handled=$handled")
+        diag("sym tap handled=$handled")
         if (handled && !isInputViewShown) {
             try {
                 requestShowSelf(SHOW_EXPLICIT)
@@ -732,7 +788,7 @@ class MeltypeImeService : InputMethodService(), OverlayOwner {
     private var zeroDown = false
     private var zerosTyped = 0
     private var micKeyCode = -1
-    private var pendingVoice: String? = null
+    private var voiceGeneration = 0L
     private var voice: VoiceInput? = null
 
     private val zeroLongPress = Runnable {
@@ -812,20 +868,22 @@ class MeltypeImeService : InputMethodService(), OverlayOwner {
     private fun voiceSession(): VoiceInput = voice ?: VoiceInput(
         this,
         onText = { text ->
+            val generation = voiceGeneration
             handler.post {
+                if (generation != voiceGeneration || !controller.acceptsVoice) return@post
                 hideSpeakIcon()
                 dismissIndicator()
                 val connection = currentInputConnection
                 if (connection != null) {
                     connection.finishComposingText()
                     connection.commitText(text, 1)
-                } else {
-                    pendingVoice = text
                 }
             }
         },
         onEnd = { reason ->
+            val generation = voiceGeneration
             handler.post {
+                if (generation != voiceGeneration) return@post
                 hideSpeakIcon()
                 dismissIndicator()
                 when (reason) {
@@ -852,6 +910,8 @@ class MeltypeImeService : InputMethodService(), OverlayOwner {
     }
 
     private fun beginVoice() {
+        if (!::controller.isInitialized || !controller.acceptsVoice) return
+        voiceGeneration += 1
         if (voiceSession().start()) showSpeakIcon()
     }
 
@@ -895,6 +955,7 @@ class MeltypeImeService : InputMethodService(), OverlayOwner {
     }
 
     private fun cancelZeroHold() {
+        voiceGeneration += 1
         handler.removeCallbacks(zeroLongPress)
         handler.removeCallbacks(zeroTap)
         handler.removeCallbacks(micRelease)
@@ -951,7 +1012,10 @@ class MeltypeImeService : InputMethodService(), OverlayOwner {
         }
         if (isMicKey(event)) {
             if (event.keyCode == KeyEvent.KEYCODE_VOICE_ASSIST) {
-                if (event.repeatCount == 0) beginVoice()
+                if (event.repeatCount == 0) {
+                    micKeyCode = event.keyCode
+                    beginVoice()
+                }
                 return true
             }
             if (event.repeatCount == 0) onMicDown(event.keyCode)
@@ -1006,7 +1070,12 @@ class MeltypeImeService : InputMethodService(), OverlayOwner {
     override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
         if (event.keyCode == KeyEvent.KEYCODE_ALT_LEFT || event.keyCode == KeyEvent.KEYCODE_ALT_RIGHT) hideSymbolLegend()
         if (micKeyCode != -1 && event.keyCode == micKeyCode) {
-            onMicUp()
+            if (event.keyCode == KeyEvent.KEYCODE_VOICE_ASSIST) {
+                micKeyCode = -1
+                endVoice()
+            } else {
+                onMicUp()
+            }
             return true
         }
         return panelConsumed.remove(keyCode) || controller.keyUp(keyCode) || super.onKeyUp(keyCode, event)

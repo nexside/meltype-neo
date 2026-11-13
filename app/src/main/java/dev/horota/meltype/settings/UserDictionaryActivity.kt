@@ -13,6 +13,8 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import android.view.View
+import android.view.ViewGroup
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.IOException
@@ -28,6 +30,12 @@ class UserDictionaryActivity : Activity() {
     private lateinit var bulk: EditText
     private lateinit var result: TextView
     private lateinit var count: TextView
+    private lateinit var root: LinearLayout
+    private var lastSavedText = ""
+    private var busy = false
+
+    private data class Content(val text: String, val words: Int)
+    private data class Imported(val content: Content, val summary: String, val clearInput: Boolean)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -63,18 +71,21 @@ class UserDictionaryActivity : Activity() {
             text = "保存"
             setOnClickListener {
                 val text = editor.text.toString()
-                val invalid = UserDictionaryText.invalidLines(text)
-                if (invalid.isNotEmpty()) {
-                    Toast.makeText(context, "形式が違う行: ${invalid.joinToString()} (読み[Tab]単語)", Toast.LENGTH_LONG).show()
-                    return@setOnClickListener
+                val expected = lastSavedText
+                task(work = {
+                    val invalid = UserDictionaryText.invalidLines(text)
+                    require(invalid.isEmpty()) { "形式が違う行: ${invalid.take(MAX_SHOWN_LINES).joinToString()} (読み[Tab]単語)" }
+                    DictionaryStorage.save(file, text, expected)
+                    syncGenre()
+                    content(text)
+                }) {
+                    showContent(it)
+                    Toast.makeText(this@UserDictionaryActivity, "保存しました。次に入力欄を開いたときに反映されます", Toast.LENGTH_LONG).show()
                 }
-                writeDictionary(text)
-                refresh()
-                Toast.makeText(context, "保存しました。次に入力欄を開いたときに反映されます", Toast.LENGTH_LONG).show()
             }
         }
 
-        val root = LinearLayout(this).apply {
+        root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(32, 32, 32, 32)
             addView(heading("一括登録"))
@@ -112,16 +123,7 @@ class UserDictionaryActivity : Activity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode != REQUEST_PICK || resultCode != RESULT_OK) return
         val uri = data?.data ?: return
-        val text = try {
-            readFile(uri)
-        } catch (e: IOException) {
-            showResult("読めませんでした: ${e.message}")
-            return
-        } catch (e: IllegalArgumentException) {
-            showResult(e.message.orEmpty())
-            return
-        }
-        addFromText(text, clearInput = false)
+        importText(clearInput = false) { readFile(uri) }
     }
 
     private fun readFile(uri: Uri): String {
@@ -147,13 +149,20 @@ class UserDictionaryActivity : Activity() {
             showResult("追加する内容がありません")
             return
         }
-        val parsed = UserDictionaryImport.parse(text)
-        val existing = if (file.exists()) file.readText() else ""
-        val merged = UserDictionaryImport.merge(existing, parsed.entries)
-        if (merged.added > 0) writeDictionary(merged.text)
-        if (clearInput && parsed.skipped.isEmpty()) bulk.setText("")
-        refresh()
-        showResult(summary(merged.added, merged.duplicates, parsed.skipped))
+        importText(clearInput) { text }
+    }
+
+    private fun importText(clearInput: Boolean, read: () -> String) {
+        task(work = {
+            val parsed = UserDictionaryImport.parse(read())
+            val merged = DictionaryStorage.merge(file, parsed.entries)
+            if (merged.added > 0) syncGenre()
+            Imported(content(merged.text), summary(merged.added, merged.duplicates, parsed.skipped), clearInput && parsed.skipped.isEmpty())
+        }) {
+            if (it.clearInput) bulk.setText("")
+            showContent(it.content)
+            showResult(it.summary)
+        }
     }
 
     private fun summary(added: Int, duplicates: Int, skipped: List<Int>): String {
@@ -167,20 +176,44 @@ class UserDictionaryActivity : Activity() {
         return parts.joinToString("\n")
     }
 
-    private fun writeDictionary(text: String) {
-        file.parentFile?.mkdirs()
-        file.writeText(text)
-        if (genre != null) GenreStore(this).sync() // オンのジャンルなら辞書のファイルを作り直す
+    private fun syncGenre() {
+        if (genre != null) GenreStore(applicationContext).sync()
     }
 
-    private fun refresh() {
-        val text = if (file.exists()) file.readText() else ""
-        editor.setText(text)
-        val words = text.lines().count { line ->
-            val fields = line.split('\t')
-            !line.startsWith("#") && !line.startsWith("!") && fields.size >= 2 && fields[0].isNotBlank() && fields[1].isNotBlank()
+    private fun content(text: String): Content = Content(text, text.lineSequence().count { line ->
+        val fields = line.split('\t')
+        !line.startsWith("#") && !line.startsWith("!") && fields.size >= 2 && fields[0].isNotBlank() && fields[1].isNotBlank()
+    })
+
+    private fun refresh() = task(work = { content(DictionaryStorage.read(file)) }, success = ::showContent)
+
+    private fun showContent(content: Content) {
+        lastSavedText = content.text
+        editor.setText(content.text)
+        count.text = "登録数: ${content.words}"
+    }
+
+    private fun setBusy(value: Boolean) {
+        busy = value
+        fun enable(view: View) {
+            view.isEnabled = !value
+            if (view is ViewGroup) for (i in 0 until view.childCount) enable(view.getChildAt(i))
         }
-        count.text = "登録数: $words"
+        enable(root)
+    }
+
+    private fun <T> task(work: () -> T, success: (T) -> Unit) {
+        if (busy) return
+        setBusy(true)
+        showResult("処理中…")
+        DictionaryJobs.run(this, work, {
+            setBusy(false)
+            showResult("")
+            success(it)
+        }, {
+            setBusy(false)
+            showResult("処理できませんでした: ${it.message.orEmpty()}")
+        })
     }
 
     private fun showResult(text: String) {

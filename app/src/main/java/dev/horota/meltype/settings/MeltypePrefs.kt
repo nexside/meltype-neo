@@ -12,6 +12,19 @@ import java.io.File
 class MeltypePrefs(context: Context) {
     private val prefs = context.getSharedPreferences("meltype", Context.MODE_PRIVATE)
 
+    init {
+        if (prefs.getInt("diagnostic_format", 0) < 2) {
+            DiagLog.clear(dataDirectory(context))
+            prefs.edit().putInt("diagnostic_format", 2).apply()
+        }
+    }
+
+    var diagnosticLogging: Boolean
+        get() = prefs.getBoolean("diagnostic_logging", false)
+        set(value) {
+            prefs.edit().putBoolean("diagnostic_logging", value).apply()
+        }
+
     var codeApps: Set<String>
         get() = prefs.getStringSet(KEY_CODE_APPS, null)?.toSet() ?: EditorPolicy.DEFAULT_CODE_APPS
         set(value) = prefs.edit().putStringSet(KEY_CODE_APPS, value).apply()

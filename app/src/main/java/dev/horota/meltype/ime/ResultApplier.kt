@@ -78,6 +78,8 @@ class ResultApplier(private val sink: EditorSink, private val display: Candidate
     /** 入力欄が変わった (onStartInput) とき、未確定の文字をその場で確定したときに呼ぶ。 */
     fun reset() {
         composing = false
+        selfEdit = false
+        lastReading = null
     }
 
     private fun clearComposing() {

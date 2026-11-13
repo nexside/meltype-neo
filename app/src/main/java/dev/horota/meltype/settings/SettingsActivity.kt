@@ -39,7 +39,7 @@ class SettingsActivity : Activity() {
             setContentView(buildSettingsUi())
         } catch (e: Throwable) {
             // 整理した画面が端末で作れないときは、原因をそのまま画面に出す (原因を特定するため)
-            DiagLog.add(MeltypePrefs.dataDirectory(this), "settings build FAILED: $e")
+            if (prefs.diagnosticLogging) DiagLog.add(MeltypePrefs.dataDirectory(this), "settings build FAILED: ${e.javaClass.simpleName}")
             val trace = android.util.Log.getStackTraceString(e)
             setContentView(ScrollView(this).apply {
                 addView(TextView(context).apply {
@@ -66,7 +66,7 @@ class SettingsActivity : Activity() {
         steps.addView(button("1. Meltype を有効にする") { open(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS)) })
         steps.addView(button("2. Meltype を選ぶ") { getSystemService(InputMethodManager::class.java).showInputMethodPicker() })
         steps.addView(button("3. キーボード配列") { open(Intent(Settings.ACTION_HARD_KEYBOARD_SETTINGS)) })
-        steps.addView(note("JIS キーボードは、配列を「日本語」にします。"))
+        steps.addView(note("JIS キーボードは、配列を「日本語」にします。物理キーボードがない場合は以前の入力方法へ戻ります。戻れない場合は画面の切り替えボタンから選べます。"))
         if (done) {
             steps.visibility = View.GONE
             setup.addView(note("有効化と選択は済んでいます。"))
@@ -161,6 +161,12 @@ class SettingsActivity : Activity() {
 
         // その他
         val other = card(root, "その他")
+        other.addView(note("バージョン ${dev.horota.meltype.BuildConfig.VERSION_NAME}"))
+        other.addView(switch("診断ログを記録する", prefs.diagnosticLogging) {
+            prefs.diagnosticLogging = it
+            if (!it) DiagLog.clear(MeltypePrefs.dataDirectory(this))
+        })
+        other.addView(note("標準ではオフ。入力文字は記録しません。"))
         other.addView(button("診断ログ") { startActivity(Intent(this, DiagLogActivity::class.java)) })
         other.addView(button("ライセンス") { showNotices() })
 

@@ -64,6 +64,7 @@ class DiagLogActivity : Activity() {
     }
 
     private fun refresh() {
-        body.text = DiagLog.read(MeltypePrefs.dataDirectory(this))
+        val directory = MeltypePrefs.dataDirectory(this)
+        DictionaryJobs.run(this, { DiagLog.read(directory) }, { body.text = it }, { body.text = "(読めません)" })
     }
 }

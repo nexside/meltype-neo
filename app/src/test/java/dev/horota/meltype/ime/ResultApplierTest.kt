@@ -81,6 +81,21 @@ class ResultApplierTest {
     }
 
     @Test
+    fun resetDoesNotTreatTheNextEditorsSelectionAsOurEdit() {
+        applier.apply(SessionResult(true, listOf(TextEdit(0, "abc"))))
+        applier.reset()
+        assertFalse(applier.takeSelfEdit())
+    }
+
+    @Test
+    fun resetForgetsThePreviousEditorsReading() {
+        applier.apply(SessionResult(true, emptyList(), CompositionView(text = "よみ")))
+        assertEquals("よみ", applier.lastReading)
+        applier.reset()
+        assertEquals(null, applier.lastReading)
+    }
+
+    @Test
     fun resetForgetsComposing() {
         applier.apply(SessionResult(true, emptyList(), CompositionView(text = "か")))
         applier.reset()

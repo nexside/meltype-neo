@@ -6,6 +6,8 @@ import android.app.AlertDialog
 import android.content.Intent
 import android.os.Bundle
 import android.text.InputType
+import android.view.View
+import android.view.ViewGroup
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
@@ -14,17 +16,16 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 
-/**
- * ジャンル別の辞書 (専門分野) をオン / オフする画面。同梱のジャンルと、自分で作るジャンル (語はテキストで一括登録できる)。
- * 反映は次に入力欄を開いたとき。
- */
+/** ジャンル一覧の集計・辞書の生成も、入力や画面操作のスレッドを止めずに行う。 */
 class GenreDictionaryActivity : Activity() {
     private lateinit var store: GenreStore
     private lateinit var root: LinearLayout
+    private var busy = false
+    private data class Snapshot(val counts: Map<String, Int>, val mine: List<String>, val enabled: Set<String>)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        store = GenreStore(this)
+        store = GenreStore(applicationContext)
         root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(32, 32, 32, 32)
@@ -34,45 +35,69 @@ class GenreDictionaryActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
-        render()
+        reload()
     }
 
-    private fun render() {
+    private fun snapshot(): Snapshot {
+        val mine = store.userGenres()
+        val keys = GenreCatalog.builtIns.map { it.key } + mine.map { "user:$it" }
+        return Snapshot(keys.associateWith { store.entries(it).size }, mine, MeltypePrefs(applicationContext).enabledGenres)
+    }
+
+    private fun reload(mutate: () -> Unit = {}) {
+        if (busy) return
+        setBusy(true)
+        DictionaryJobs.run(this, { mutate(); snapshot() }, {
+            setBusy(false)
+            render(it)
+        }, {
+            setBusy(false)
+            Toast.makeText(this, "辞書を更新できませんでした: ${it.message.orEmpty()}", Toast.LENGTH_LONG).show()
+            // チェック状態を実際の設定へ戻す。
+            setBusy(true)
+            DictionaryJobs.run(this, ::snapshot, { data -> setBusy(false); render(data) }, { setBusy(false) })
+        })
+    }
+
+    private fun setBusy(value: Boolean) {
+        busy = value
+        fun enable(view: View) {
+            view.isEnabled = !value
+            if (view is ViewGroup) for (i in 0 until view.childCount) enable(view.getChildAt(i))
+        }
+        enable(root)
+    }
+
+    private fun render(data: Snapshot) {
         root.removeAllViews()
         root.addView(heading("ジャンル別の辞書"))
-        root.addView(
-            TextView(this).apply {
-                text = "使う分野をオンにすると、その分野の用語が変換で出ます。入力欄を開き直すと反映されます。"
-            },
-        )
+        root.addView(TextView(this).apply {
+            text = "使う分野をオンにすると、その分野の用語が変換で出ます。入力欄を開き直すと反映されます。"
+        })
         root.addView(heading("同梱のジャンル"))
         for (genre in GenreCatalog.builtIns) {
-            val count = store.entries(genre.key).size
-            root.addView(switch(genre.key, "${genre.name} ($count 語)\n${genre.description}"))
+            root.addView(switch(genre.key, "${genre.name} (${data.counts[genre.key] ?: 0} 語)\n${genre.description}", data))
         }
         root.addView(heading("自分のジャンル"))
-        val mine = store.userGenres()
-        if (mine.isEmpty()) root.addView(TextView(this).apply { text = "まだありません。" })
-        for (name in mine) {
+        if (data.mine.isEmpty()) root.addView(TextView(this).apply { text = "まだありません。" })
+        for (name in data.mine) {
             val key = "user:$name"
-            root.addView(switch(key, "$name (${store.entries(key).size} 語)"))
-            root.addView(
-                LinearLayout(this).apply {
-                    orientation = LinearLayout.HORIZONTAL
-                    addView(smallButton("語を登録・編集") {
-                        startActivity(Intent(context, UserDictionaryActivity::class.java).putExtra(UserDictionaryActivity.EXTRA_GENRE, name))
-                    })
-                    addView(smallButton("削除") { confirmDelete(name) })
-                },
-            )
+            root.addView(switch(key, "$name (${data.counts[key] ?: 0} 語)", data))
+            root.addView(LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                addView(smallButton("語を登録・編集") {
+                    startActivity(Intent(context, UserDictionaryActivity::class.java).putExtra(UserDictionaryActivity.EXTRA_GENRE, name))
+                })
+                addView(smallButton("削除") { confirmDelete(name) })
+            })
         }
         root.addView(smallButton("ジャンルを作る") { askName() })
     }
 
-    private fun switch(key: String, label: String) = CheckBox(this).apply {
+    private fun switch(key: String, label: String, data: Snapshot) = CheckBox(this).apply {
         text = label
-        isChecked = store.isEnabled(key)
-        setOnCheckedChangeListener { _, checked -> store.setEnabled(key, checked) }
+        isChecked = key in data.enabled
+        setOnCheckedChangeListener { _, checked -> reload { store.setEnabled(key, checked) } }
     }
 
     private fun askName() {
@@ -85,8 +110,8 @@ class GenreDictionaryActivity : Activity() {
             .setTitle("ジャンルの名前")
             .setView(input)
             .setPositiveButton("作る") { _, _ ->
-                val error = store.create(input.text.toString())
-                if (error != null) Toast.makeText(this, error, Toast.LENGTH_LONG).show() else render()
+                val name = input.text.toString()
+                reload { store.create(name)?.let { throw IllegalArgumentException(it) } }
             }
             .setNegativeButton("キャンセル", null)
             .show()
@@ -95,10 +120,7 @@ class GenreDictionaryActivity : Activity() {
     private fun confirmDelete(name: String) {
         AlertDialog.Builder(this)
             .setMessage("ジャンル「$name」とその語を削除しますか?")
-            .setPositiveButton("削除") { _, _ ->
-                store.delete(name)
-                render()
-            }
+            .setPositiveButton("削除") { _, _ -> reload { store.delete(name) } }
             .setNegativeButton("キャンセル", null)
             .show()
     }
