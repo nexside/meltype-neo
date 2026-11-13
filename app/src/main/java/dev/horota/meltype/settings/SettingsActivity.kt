@@ -17,6 +17,11 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.view.View
+import android.view.Window
+import android.view.WindowManager
+import android.os.Build
+import android.view.Gravity
+import dev.horota.meltype.ui.ScreenInsets
 import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.Spinner
@@ -33,15 +38,20 @@ class SettingsActivity : Activity() {
     private lateinit var prefs: MeltypePrefs
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        requestWindowFeature(Window.FEATURE_NO_TITLE)
         super.onCreate(savedInstanceState)
+        actionBar?.hide()
+        title = "${getString(dev.horota.meltype.R.string.app_name)} ver ${dev.horota.meltype.BuildConfig.VERSION_NAME}"
+        if (Build.VERSION.SDK_INT >= 30) window.setDecorFitsSystemWindows(false)
+        window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
         prefs = MeltypePrefs(this)
         try {
-            setContentView(buildSettingsUi())
+            setScreen(buildSettingsUi())
         } catch (e: Throwable) {
             // 整理した画面が端末で作れないときは、原因をそのまま画面に出す (原因を特定するため)
             if (prefs.diagnosticLogging) DiagLog.add(MeltypePrefs.dataDirectory(this), "settings build FAILED: ${e.javaClass.simpleName}")
             val trace = android.util.Log.getStackTraceString(e)
-            setContentView(ScrollView(this).apply {
+            setScreen(ScrollView(this).apply {
                 addView(TextView(context).apply {
                     text = "設定画面を作れませんでした。\n$e\n\n$trace"
                     textSize = 11f
@@ -49,6 +59,43 @@ class SettingsActivity : Activity() {
                     setPadding(32, 32, 32, 32)
                 })
             })
+        }
+    }
+
+    private fun isNight(): Boolean = resources.configuration.uiMode and
+        android.content.res.Configuration.UI_MODE_NIGHT_MASK == android.content.res.Configuration.UI_MODE_NIGHT_YES
+
+    private fun setScreen(content: View) {
+        val screen = LinearLayout(this).apply {
+            tag = "settings-safe-root"
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(if (isNight()) Color.rgb(18, 18, 18) else Color.rgb(250, 250, 250))
+        }
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), dp(14), dp(16), dp(12))
+            addView(TextView(context).apply {
+                text = getString(dev.horota.meltype.R.string.app_name)
+                tag = "settings-title"
+                textSize = 21f
+                setTextColor(if (isNight()) Color.WHITE else Color.BLACK)
+            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            addView(TextView(context).apply {
+                text = "ver ${dev.horota.meltype.BuildConfig.VERSION_NAME}"
+                tag = "settings-version"
+                textSize = 15f
+                setTextColor(if (isNight()) Color.LTGRAY else Color.DKGRAY)
+            })
+        }
+        screen.addView(header)
+        screen.addView(content, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+        ScreenInsets.apply(screen, includeIme = true)
+        setContentView(screen)
+        if (Build.VERSION.SDK_INT >= 30) {
+            val appearance = android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or
+                android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
+            window.insetsController?.setSystemBarsAppearance(if (isNight()) 0 else appearance, appearance)
         }
     }
 
@@ -66,7 +113,7 @@ class SettingsActivity : Activity() {
         steps.addView(button("1. Meltype を有効にする") { open(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS)) })
         steps.addView(button("2. Meltype を選ぶ") { getSystemService(InputMethodManager::class.java).showInputMethodPicker() })
         steps.addView(button("3. キーボード配列") { open(Intent(Settings.ACTION_HARD_KEYBOARD_SETTINGS)) })
-        steps.addView(note("JIS キーボードは、配列を「日本語」にします。物理キーボードがない場合は以前の入力方法へ戻ります。戻れない場合は画面の切り替えボタンから選べます。"))
+        steps.addView(note("JIS キーボードは、配列を「日本語」にします。物理キーボードがない場合は画面QWERTYキーを表示します。"))
         if (done) {
             steps.visibility = View.GONE
             setup.addView(note("有効化と選択は済んでいます。"))
@@ -87,6 +134,8 @@ class SettingsActivity : Activity() {
 
         // 入力
         val input = card(root, "入力")
+        input.addView(switch("画面キーボードを常に表示", prefs.alwaysShowSoftwareKeyboard) { prefs.alwaysShowSoftwareKeyboard = it })
+        input.addView(note("標準では物理キーボードがない場合だけ表示します。"))
         input.addView(switch("確定したかっこの中にカーソルを置く", prefs.cursorBetweenBrackets) { prefs.cursorBetweenBrackets = it })
         input.addView(note("() や 「」 を確定したとき。"))
         input.addView(switch("変換中にFキー行を自動で出す", prefs.fBarAutoShow) { prefs.fBarAutoShow = it })

@@ -19,6 +19,10 @@ class MeltypePrefs(context: Context) {
         }
     }
 
+    var alwaysShowSoftwareKeyboard: Boolean
+        get() = prefs.getBoolean("always_show_software_keyboard", false)
+        set(value) { prefs.edit().putBoolean("always_show_software_keyboard", value).apply() }
+
     var diagnosticLogging: Boolean
         get() = prefs.getBoolean("diagnostic_logging", false)
         set(value) {
